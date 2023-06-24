@@ -1,5 +1,3 @@
-
-
 /**
  * ================================================================================
  *          DECLARAÇÃO DE BIBLIOTECAS:
@@ -8,9 +6,11 @@
 
 // #include <SPI.h>
 // #include "Arduino.h"
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
 #include <WiFi.h>
 #include "heltec.h"
-#include "images.h"
+// #include "images.h"
 
 /**
  * ================================================================================
@@ -25,13 +25,86 @@ const char* ssid = "MATRIX";
 const char* password = "sentapua1945"; 
 
 // Define a porta do servidor web.
-WiFiServer server(80);
+AsyncWebServer server(80);
+// WiFiServer server(80);
 
 // Define a porta de controle para o led.
-#define pinLedSala 16
+// #define pinLedSala 16
 
 // Define a banda do monitor.
-#define BAND    868E6  //you can set band here directly,e.g. 868E6,915E6
+#define BAND 868E6
+
+const char* PARAM_INPUT_1 = "output";
+const char* PARAM_INPUT_2 = "state";
+
+const char index_html[] PROGMEM = R"rawliteral(
+  <!DOCTYPE HTML>
+  <html>
+    <head>
+      <title>ESP Web Server</title>
+      <meta charset=\"UTF-8\" name="viewport" content="width=device-width, initial-scale=1">
+      <link rel="icon" href="data:,">
+  
+      <style>
+        html {font-family: Arial; display: inline-block; text-align: center;}
+        h2 {font-size: 3.0rem;}
+        p {font-size: 3.0rem;}
+        body {max-width: 600px; margin:0px auto; padding-bottom: 25px;}
+        .switch {position: relative; display: inline-block; width: 120px; height: 68px} 
+        .switch input {display: none}
+        .slider {position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; border-radius: 6px}
+        .slider:before {position: absolute; content: ""; height: 52px; width: 52px; left: 8px; bottom: 8px; background-color: #fff; -webkit-transition: .4s; transition: .4s; border-radius: 3px}
+        input:checked+.slider {background-color: #27AE60}
+        input:checked+.slider:before {-webkit-transform: translateX(52px); -ms-transform: translateX(52px); transform: translateX(52px)}
+      </style>
+    </head>
+    
+    <body>
+      <h2>ESP Web Server</h2>
+      %BUTTONPLACEHOLDER%
+      
+      <script>
+        function toggleCheckbox(element) 
+        {
+          var xhr = new XMLHttpRequest();
+          
+          if(element.checked)
+          {
+            xhr.open("GET", "/update?output="+element.id+"&state=1", true); 
+          }
+          else 
+          { 
+            xhr.open("GET", "/update?output="+element.id+"&state=0", true); 
+          }
+          
+          xhr.send();
+        }
+      </script>
+    </body>
+  </html>
+)rawliteral";
+
+// Replaces placeholder with button section in your web page
+String processor(const String& var){
+  //Serial.println(var);
+  if(var == "BUTTONPLACEHOLDER"){
+    String buttons = "";
+    buttons += "<h4>Output - GPIO 16 (Sala)</h4><label class=\"switch\"><input type=\"checkbox\" onchange=\"toggleCheckbox(this)\" id=\"16\" " + outputState(16) + "><span class=\"slider\"></span></label>";
+    buttons += "<h4>Output - GPIO 4 (Cozinha)</h4><label class=\"switch\"><input type=\"checkbox\" onchange=\"toggleCheckbox(this)\" id=\"4\" " + outputState(4) + "><span class=\"slider\"></span></label>";
+    buttons += "<h4>Output - GPIO 33 (Quarto)</h4><label class=\"switch\"><input type=\"checkbox\" onchange=\"toggleCheckbox(this)\" id=\"33\" " + outputState(33) + "><span class=\"slider\"></span></label>";
+    return buttons;
+  }
+  return String();
+}
+
+String outputState(int output){
+  if(digitalRead(output)){
+    return "checked";
+  }
+  else {
+    return "";
+  }
+}
 
 /**
  * ================================================================================
@@ -46,7 +119,7 @@ void logoHeltec()
   
   // Carrega a logo da Heltec.
   // Precisa do arquivo "images.h" na pasta do projeto.
-  Heltec.display -> drawXbm(0,5,logo_width,logo_height,(const unsigned char *)logo_bits);
+  // Heltec.display -> drawXbm(0,5,logo_width,logo_height,(const unsigned char *)logo_bits);
   
   // Gera a saída carregada na tela.
   Heltec.display -> display();
@@ -140,18 +213,50 @@ void setup()
 {
   // Define a velocidade de comunicação com a porta serial.
   // Serial.begin(115200);
+
+  pinMode(16 , OUTPUT);
+  digitalWrite(16 , LOW);
+  // pinMode(4 , OUTPUT);
+  // digitalWrite(4 , LOW);
+  // pinMode(33 , OUTPUT);
+  // digitalWrite(33 , LOW);
     
   // Inicia o display.
   Heltec.begin(true /*DisplayEnable Enable*/, true /*LoRa Enable*/, true /*Serial Enable*/, true /*LoRa use PABOOST*/, BAND /*LoRa RF working band*/);
 
   // Executa a função logoHeltec().
-  logoHeltec();
+  // logoHeltec();
 
-  // Executa a função logoHeltec().
+  // Executa a função wifiSetUp().
   wifiSetUp();
 
-  // Define porta como saída.
-  pinMode(pinLedSala , OUTPUT);
+// ================================
+
+  // Route for root / web page
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", index_html, processor);
+  });
+
+  // Send a GET request to <ESP_IP>/update?output=<inputMessage1>&state=<inputMessage2>
+  server.on("/update", HTTP_GET, [] (AsyncWebServerRequest *request) {
+    String inputMessage1;
+    String inputMessage2;
+    // GET input1 value on <ESP_IP>/update?output=<inputMessage1>&state=<inputMessage2>
+    if (request->hasParam(PARAM_INPUT_1) && request->hasParam(PARAM_INPUT_2)) {
+      inputMessage1 = request->getParam(PARAM_INPUT_1)->value();
+      inputMessage2 = request->getParam(PARAM_INPUT_2)->value();
+      digitalWrite(inputMessage1.toInt(), inputMessage2.toInt());
+    }
+    else {
+      inputMessage1 = "No message sent";
+      inputMessage2 = "No message sent";
+    }
+    Serial.print("GPIO: ");
+    Serial.print(inputMessage1);
+    Serial.print(" - Set to: ");
+    Serial.println(inputMessage2);
+    request->send(200, "text/plain", "OK");
+  });
 
   // Inicia o serviço Web.
   server.begin();
@@ -165,159 +270,5 @@ void setup()
  
 void loop() 
 {
-  // Recebe a conexão do cliente.
-  WiFiClient client = server.available();   // listen for incoming clients
 
-  // Se existe cliente conectado.
-  if (client) 
-  {
-    // Exibe mensagem para o usuário.
-    Serial.println("Novo cliente");  
-
-    // Cria uma String para manter a comunicação de dados com o cliente.
-    String currentLine = "";
-
-    // Looping enquanto a conexão estiver ativa.
-    while (client.connected()) 
-    {
-      // Se há bytes de dados a serem lidos pelo cliente.
-      if (client.available()) 
-      {        
-        // Leia um byte, então.
-        char c = client.read();
-
-        // Imprime fora do serial monitor.
-        Serial.write(c);
-
-        // Se o byte for uma nova linha,
-        if (c == '\n') 
-        {
-          // Se a linha atual estiver em branco, você terá dois caracteres de nova linha em uma linha.
-          // Esse é o fim da solicitação HTTP do cliente, então envia uma resposta.
-          if (currentLine.length() == 0) 
-          {
-            // Os cabeçalhos HTTP sempre começam com um código de resposta (por exemplo, HTTP/1.1 200 OK)
-            // e um tipo de conteúdo para que o cliente saiba o que está por vir, então uma linha em branco.
-            client.println("HTTP/1.1 200 OK");
-            client.println("Content-type:text/html");
-            client.println();
-
-            // Modelo de código antigo.
-            /**
-            // O conteúdo de resposta HTTP após o cabeçalho.
-            client.print("Click <a href=\"/ON\">aqui</a> para ligar o pino 16 do Led.<br>");
-            client.print("Click <a href=\"/OFF\">aqui</a> para desligar o pino 16 do Led.<br>");
-
-            // Check to see if the client request was "GET /H" or "GET /L":
-            if (currentLine.endsWith("GET /ON")) 
-            {
-              digitalWrite(pinLed , HIGH);               // GET /H turns the LED on
-            }
-            
-            if (currentLine.endsWith("GET /OFF")) 
-            {
-              digitalWrite(pinLed , LOW);                // GET /L turns the LED off
-            }
-            */
-
-            // Modelo de Tabela.
-            /**
-            <table>
-            <tr>
-                <th>Coluna 1</th>
-                <th>Coluna 2</th>
-            </tr>
-  
-            <tr>
-              <td>Linha 1, Coluna 1</td>
-              <td>Linha 1, Coluna 2</td>
-            </tr>
-  
-            <tr>
-              <td>Linha 2, Coluna 1</td>
-              <td>Linha 2, Coluna 2</td>
-            </tr>
-  
-            <tr>
-              <td>Linha 3, Coluna 1</td>
-              <td>Linha 3, Coluna 2</td>
-            </tr>
-          </table>
-          */
-            client.println("<html>");
-            client.println("<title>Casa</title>");
-            client.println("<meta charset=\"UTF-8\"/>");
-            client.println("<form>");
-            client.println("<h3>CONTROLE CASA INTELIGENTE</h3>");
-            client.println("<br>");
-            client.println("*** Controle Iluminação: ***");
-            client.println("<br><br>");
-
-            client.println("<table border=\"2\">");
-              client.println("<tr>");
-                client.println("<th>ON:</th>");
-                client.println("<th>OFF:</th>");
-                client.println("<th>STATUS:</th>");
-              client.println("</tr>");
-
-            client.println("<tr>");
-                client.println("<td><input type=\"radio\" name=\"led16\" value=\"ON\">Luz Sala</td>");
-                client.println("<td><input type=\"radio\" name=\"led16\" value=\"OFF\">Luz Sala</td>");
-                client.println("<td><center>");
-                client.println(digitalRead(pinLedSala));
-                client.println("</center></td>");
-            client.println("</tr>");
-           
-            client.println("<tr>");
-                client.println("<td><input type=\"radio\" name=\"led16\" value=\"ON\">Luz Escritório</td>");
-                client.println("<td><input type=\"radio\" name=\"led16\" value=\"OFF\">Luz Escritório</td>");
-                client.println("<td><center>");
-                client.println(digitalRead(pinLedSala));
-                client.println("</center></td>");
-            client.println("</tr>");
-           
-            client.println("</table>");
-            client.println("<br><br>");
-            client.println("<input type=\"submit\" value=\"Enviar\">");
-            client.println("</form>");
-            client.println("</html>");
-
-            // O HTTP responde o final da solicitação com uma linha em branco.
-            client.println();
-            
-            // Interrompe o looping com um break.
-            break;
-            
-          } 
-          else 
-          {   
-            // Se você tiver uma nova linha, limpe currentLine.
-            currentLine = "";
-          }
-        } 
-        else if (c != '\r') 
-        {  
-          // Se você tiver qualquer outra coisa além de um caractere de retorno, adiciona ao final de currentLine.
-          currentLine += c;
-        }
-
-
-        // Verifica se a requisição do cliente contém o valor de led enviado pelo radio button, e implementa.
-        if (currentLine.indexOf("led16=ON") != -1) 
-        {
-          digitalWrite(pinLedSala , HIGH); // Liga o LED
-        }
-        
-        if (currentLine.indexOf("led16=OFF") != -1) 
-        {
-          digitalWrite(pinLedSala , LOW); // Desliga o LED
-        }
-        
-      }
-    }
-    
-    // Fecha a conexão.
-    client.stop();
-    Serial.println("Cliente desconectado!");
-  }
 }
